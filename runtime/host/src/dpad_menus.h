@@ -27,6 +27,11 @@ void bluewake_dpad_menus_attach(CPUState* cpu);
 void bluewake_dpad_menus_reload(void);
 // Player 1's pad, as the game is about to read it.
 void bluewake_dpad_menus_apply(DolPadState* pad);
+// The game's menu state as of the last pad read: dMenu_pause (non-zero while a
+// menu is open) and menu_status (kBwMenuStatusItem, kBwMenuStatusCollect, or
+// another value for screens such as the sea chart and dungeon maps). Returns
+// false until the guest is running. Either output may be NULL.
+bool bluewake_dpad_menu_state(uint8_t* open, uint8_t* status);
 
 #ifdef __cplusplus
 }

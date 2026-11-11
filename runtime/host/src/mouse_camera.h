@@ -92,6 +92,10 @@ void bluewake_mouse_camera_reload(void);
 // The Windows options overlay applies these directly and blocks gameplay input.
 void bluewake_mouse_camera_configure(bool enabled, double sensitivity, bool invert_y);
 void bluewake_mouse_camera_block(bool blocked);
+// iPhone and iPad: a finger's drag, in points, turns the camera as pointer travel
+// does. The shell calls it from its pan gesture; it does nothing unless the mouse
+// camera is configured on.
+void bluewake_mouse_camera_touch_drag(double dx, double dy);
 // When a menu closes: the controller's buttons, sticks and triggers stay at
 // rest for the game until they have all been let go, so the press that closed
 // the menu (B, or A on a button) doesn't reach the game.

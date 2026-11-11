@@ -21,6 +21,7 @@
 #include <SDL3/SDL_video.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,6 +128,10 @@ static unsigned g_buttons_latched;
 static BwMouseMap g_mouse_map = {{1, 0, 0, 0, 0}};
 static SDL_WindowID g_window;
 static double g_sum_x, g_sum_y;
+// Finger drags on iPhone and iPad (bluewake_mouse_camera_touch_drag). The touch
+// thread only adds to these; view_frame, on the game thread, takes them into the
+// sums above, so the two threads never write the same variable.
+static atomic_double g_touch_x, g_touch_y;
 static double g_wheel; // notches, positive away from the player (zoom in)
 static double g_sensitivity = 1.0;
 static double g_invert_y = 1.0;
@@ -510,6 +515,20 @@ void bluewake_mouse_camera_block(bool blocked) {
     g_blocked = blocked;
     if (blocked)
         set_captured(false);
+}
+
+// iPhone and iPad: a finger's drag turns the camera by the same amount pointer
+// travel does (points, scaled by the sensitivity). Ignored unless the mouse
+// camera is on and not blocked (cutscenes, Z-targeting, the menus).
+void bluewake_mouse_camera_touch_drag(double dx, double dy) {
+    if (!g_enabled || g_blocked)
+        return;
+    double old = atomic_load(&g_touch_x);
+    while (!atomic_compare_exchange_weak(&g_touch_x, &old, old + dx)) {
+    }
+    old = atomic_load(&g_touch_y);
+    while (!atomic_compare_exchange_weak(&g_touch_y, &old, old + dy)) {
+    }
 }
 
 bool bluewake_mouse_camera_scripted(void) { return g_stick_test_count > 0u; }
@@ -1131,9 +1150,15 @@ static void take_fresh_motion(void) {
 // game keeps it clear; placed at camera_draw instead, it went wherever the
 // angles said, into the ground or under the sea when tilted low.
 static void view_frame(CPUState* cpu, u32 camera) {
-    if (aiming_view(cpu, camera) || !camera_free(cpu, camera))
+    if (aiming_view(cpu, camera) || !camera_free(cpu, camera)) {
+        // Drags made while the camera is not free are dropped, not replayed later.
+        atomic_exchange(&g_touch_x, 0.0);
+        atomic_exchange(&g_touch_y, 0.0);
         return; // camera_frame, at the draw, lets go
+    }
     take_fresh_motion();
+    g_sum_x += atomic_exchange(&g_touch_x, 0.0);
+    g_sum_y += atomic_exchange(&g_touch_y, 0.0);
     double stick_yaw = 0.0, stick_pitch = 0.0;
     if (g_stick_on) {
         double x, y;
