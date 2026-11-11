@@ -1,0 +1,59 @@
+name: iOS shell (unsigned)
+
+# Builds the iPhone/iPad app shell only (no disc, no game code). PadMint links
+# the game module into this app on a PC, so the shell must match v0.11.0's ABI.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [touch-controls]
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch RecompCore at the pinned commit
+        run: |
+          git clone --no-checkout --filter=blob:none https://github.com/chrissotraidis/RecompCore.git ref/recompcore
+          git -C ref/recompcore checkout --detach f9e3f4e59be4d49f10130bf6e68bc5d5fa0451e6
+
+      - name: Fetch Dawn for iOS (pinned, checksum checked)
+        run: |
+          mkdir -p build/ios-deps && cd build/ios-deps
+          curl -fLO https://github.com/encounter/dawn/releases/download/v20260618.032059/dawn-ios-arm64.tar.gz
+          echo "ada0bafc173152d80eba7c3b2f9609a71185d5809cbd5dd3251b91a0803a7ae2  dawn-ios-arm64.tar.gz" | shasum -a 256 -c -
+          tar xzf dawn-ios-arm64.tar.gz
+
+      - name: Configure (device)
+        run: |
+          DAWN_CONFIG=$(find build/ios-deps -name DawnConfig.cmake | head -1)
+          test -n "$DAWN_CONFIG"
+          cmake -S apple/ios -B build/ios-device -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF -DPNG_SHARED=OFF \
+            -DAURORA_DAWN_PROVIDER=system -DDawn_DIR="$(dirname "$DAWN_CONFIG")" \
+            -DAURORA_SDL3_PROVIDER=vendor -DAURORA_SDL3_LINKAGE=static -DAURORA_DAWN_LINKAGE=static \
+            '-DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew;/usr/local' -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
+
+      - name: Build the app
+        run: cmake --build build/ios-device --target BlueWake
+
+      - name: Package the unsigned IPA
+        run: |
+          APP=$(find build/ios-device -name BlueWake.app -type d | head -1)
+          test -n "$APP"
+          mkdir -p ipa/Payload && cp -R "$APP" ipa/Payload/
+          (cd ipa && zip -qry ../BlueWake-shell-unsigned.ipa Payload)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlueWake-shell-unsigned
+          path: BlueWake-shell-unsigned.ipa
+          retention-days: 14
