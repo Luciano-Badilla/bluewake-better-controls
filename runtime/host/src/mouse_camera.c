@@ -131,7 +131,7 @@ static double g_sum_x, g_sum_y;
 // Finger drags on iPhone and iPad (bluewake_mouse_camera_touch_drag). The touch
 // thread only adds to these; view_frame, on the game thread, takes them into the
 // sums above, so the two threads never write the same variable.
-static atomic_double g_touch_x, g_touch_y;
+static _Atomic double g_touch_x, g_touch_y;
 static double g_wheel; // notches, positive away from the player (zoom in)
 static double g_sensitivity = 1.0;
 static double g_invert_y = 1.0;
