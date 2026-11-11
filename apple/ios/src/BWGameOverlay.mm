@@ -180,6 +180,14 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
 @property(nonatomic) uint16_t inputMask;
 @end
 @implementation BWGameButton
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // A button's icon is scaled to fit inside the disc, with a margin all round.
+    // (The PNGs are 192 pixels, so they would overflow at their natural size.)
+    const CGFloat inset = std::min(self.bounds.size.width, self.bounds.size.height) * 0.24;
+    self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.imageView.frame = CGRectInset(self.bounds, inset, inset);
+}
 @end
 
 // The ellipsis button; the game is held while its menu is on screen.
@@ -2281,13 +2289,8 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [self place:_dpadGroup identifier:@"DPad" defaultFrame:dpadDefault];
     [self layoutDPadButtons];
 
-    for (BWGameButton* button in _buttons) {
-        const CGFloat side = std::min(button.bounds.size.width, button.bounds.size.height);
-        button.layer.cornerRadius = side * 0.5;
-        // The icon sits inside the ring with room to spare, so the ring stays visible.
-        const CGFloat inset = side * 0.24;
-        button.imageEdgeInsets = UIEdgeInsetsMake(inset, inset, inset, inset);
-    }
+    for (BWGameButton* button in _buttons)
+        button.layer.cornerRadius = std::min(button.bounds.size.width, button.bounds.size.height) * 0.5;
 
     _menuButton.frame = CGRectMake(CGRectGetMaxX(safe) - 40.0 - 12.0, CGRectGetMinY(safe) + 12.0, 40.0, 40.0);
     _fpsLabel.frame = CGRectMake(CGRectGetMinX(safe) + 12.0, CGRectGetMinY(safe) + 12.0, 250.0, 28.0);
