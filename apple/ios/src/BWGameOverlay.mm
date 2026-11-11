@@ -34,6 +34,14 @@ extern "C" {
 #include "dolphin_save_import.h"
 #include "touch_controls.h"
 
+// The touch camera and the D-pad on maps: plain C in mouse_camera.c and dpad_menus.c.
+extern "C" void bluewake_mouse_camera_configure(bool enabled, double sensitivity, bool invert_y);
+extern "C" void bluewake_mouse_camera_touch_drag(double dx, double dy);
+extern "C" bool bluewake_dpad_menu_state(uint8_t* open, uint8_t* status);
+// Degrees the camera turns per point of finger travel. Pointer travel uses 1.0; a
+// phone screen is small, so a full-width drag turns the camera less at 0.6.
+static const double kTouchCameraSensitivity = 0.6;
+
 #define BW_GITHUB_URL "https://github.com/chrissotraidis/bluewake"
 
 // The game options the game module offers (runtime/host/src/game_options.h):
@@ -360,6 +368,20 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
             BWDumpMenu(child, depth + 1);
 }
 
+// The icon that stands for each touch button (resources/touch_*.png). Buttons
+// without one, the L and R shoulders and the D-pad arrows, keep their text.
+static NSString* BWTouchIconName(uint16_t mask) {
+    switch (mask) {
+    case BLUEWAKE_TOUCH_A: return @"touch_action";
+    case BLUEWAKE_TOUCH_B: return @"touch_sword";
+    case BLUEWAKE_TOUCH_Z: return @"touch_lockon";
+    case BLUEWAKE_TOUCH_X: return @"touch_bow";
+    case BLUEWAKE_TOUCH_Y: return @"touch_boomerang";
+    case BLUEWAKE_TOUCH_START: return @"touch_pause";
+    default: return nil;
+    }
+}
+
 @implementation BWGameOverlay {
     BWMenuButton* _menuButton;
     BOOL _menuStale; // a switch changed while the menu stayed open
@@ -386,6 +408,9 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
     NSDictionary<NSString*, NSValue*>* _columnFrames;  // phone letterbox defaults, if they apply
     UILabel* _fpsLabel;
     NSTimer* _fpsTimer;
+    NSTimer* _mapTimer;                  // checks whether a map that reads the D-pad is open
+    BOOL _onMap;                         // the sea chart or a dungeon map is open
+    UIPanGestureRecognizer* _cameraDrag; // a finger's drag over the game turns the camera
     NSDictionary<NSString*, NSNumber*>* _launchMods;  // mod switches as this launch read them
     void (^_pickHandler)(NSArray<NSURL*>* urls);      // the open file picker's handler
     void (^_hdPickHandler)(BWHDScopedURL* picked);    // nil on cancel; called after dismissal
@@ -417,6 +442,11 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
         [self buildFPSLabel];
         [self observeLifecycle];
         [self applyControllerVisibility];
+        // Touch drags turn the camera (cameraDragged:), so the mouse camera is on here.
+        bluewake_mouse_camera_configure(true, kTouchCameraSensitivity, false);
+        _mapTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self
+                                                   selector:@selector(refreshMapState)
+                                                   userInfo:nil repeats:YES];
     }
     return self;
 }
@@ -426,7 +456,67 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
     if (_hdBackgroundTask != UIBackgroundTaskInvalid)
         [UIApplication.sharedApplication endBackgroundTask:_hdBackgroundTask];
     [_fpsTimer invalidate];
+    [_mapTimer invalidate];
+    [_cameraDrag.view removeGestureRecognizer:_cameraDrag];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// ---------------------------------------------------------------- touch camera and maps
+
+// A finger dragged over the game (not over a control) turns the camera, the way
+// pointer travel does on the Mac. The pan sits on the view the overlay is in, so it
+// sees the drags the overlay's pass-through hit test leaves to the game.
+- (void)didMoveToSuperview {
+    [super didMoveToSuperview];
+    if (_cameraDrag != nil) {
+        [_cameraDrag.view removeGestureRecognizer:_cameraDrag];
+        _cameraDrag = nil;
+    }
+    if (self.superview == nil)
+        return;
+    UIPanGestureRecognizer* drag = [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                           action:@selector(cameraDragged:)];
+    drag.maximumNumberOfTouches = 1;
+    drag.cancelsTouchesInView = NO;
+    drag.delegate = self;
+    [self.superview addGestureRecognizer:drag];
+    _cameraDrag = drag;
+}
+
+- (void)cameraDragged:(UIPanGestureRecognizer*)drag {
+    CGPoint travel = [drag translationInView:self.superview];
+    [drag setTranslation:CGPointZero inView:self.superview];
+    if (travel.x != 0.0 || travel.y != 0.0)
+        bluewake_mouse_camera_touch_drag(travel.x, travel.y);
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)recognizer shouldReceiveTouch:(UITouch*)touch {
+    if (recognizer != _cameraDrag)
+        return YES;
+    // Only the free screen: not a control, not the settings panel, not the layout editor.
+    if (_editing || !_settingsPanel.hidden)
+        return NO;
+    UIView* hit = touch.view;
+    return hit == nil || ![hit isDescendantOfView:self];
+}
+
+// The sea chart and the dungeon maps are the screens that read the D-pad. The game's
+// menu state (dpad_menus.c) says when a menu is open. The Items and Quest Status
+// screens (statuses 1 and 2) use the stick only, so the D-pad stays away from them.
+- (void)refreshMapState {
+    uint8_t open = 0, status = 0;
+    bluewake_dpad_menu_state(&open, &status);
+    const BOOL onMap = open != 0 && status != 1 && status != 2;
+    if (onMap == _onMap)
+        return;
+    _onMap = onMap;
+    if (!onMap) {
+        // A D-pad key still held when its map closes would stay pressed: release it.
+        _pad.buttons &= (uint16_t)~(BLUEWAKE_TOUCH_DPAD_UP | BLUEWAKE_TOUCH_DPAD_DOWN |
+                                    BLUEWAKE_TOUCH_DPAD_LEFT | BLUEWAKE_TOUCH_DPAD_RIGHT);
+        [self publish];
+    }
+    [self updateAppearance];
 }
 
 // ---------------------------------------------------------------- FPS display
@@ -1937,8 +2027,8 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     _moveStick = [self makeStick];
     _moveStick.accessibilityLabel = @"Move stick";
     _moveStick.accessibilityIdentifier = @"move";
-    [_moveStick applyBaseColor:[UIColor colorWithWhite:0.13 alpha:0.86]
-                    thumbColor:[UIColor colorWithWhite:0.58 alpha:0.94]];
+    [_moveStick applyBaseColor:[UIColor colorWithWhite:1.0 alpha:0.12]
+                    thumbColor:[UIColor colorWithWhite:1.0 alpha:0.30]];
     _cStick = [self makeStick];
     _cStick.accessibilityLabel = @"Camera stick";
     _cStick.accessibilityIdentifier = @"c";
@@ -1993,27 +2083,21 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
 }
 
 - (void)addButton:(NSString*)label mask:(uint16_t)mask identifier:(NSString*)identifier {
-    BWGameButton* button = [BWGameButton buttonWithType:UIButtonTypeSystem];
-    [button setTitle:label forState:UIControlStateNormal];
-    UIColor* fill = [UIColor colorWithWhite:0.22 alpha:0.88];
-    UIColor* title = UIColor.whiteColor;
-    switch (mask) {
-    case BLUEWAKE_TOUCH_A: fill = [UIColor colorWithRed:0.08 green:0.56 blue:0.29 alpha:0.92]; break;
-    case BLUEWAKE_TOUCH_B: fill = [UIColor colorWithRed:0.78 green:0.10 blue:0.13 alpha:0.92]; break;
-    case BLUEWAKE_TOUCH_X:
-    case BLUEWAKE_TOUCH_Y:
-        fill = [UIColor colorWithWhite:0.72 alpha:0.92];
-        title = [UIColor colorWithWhite:0.12 alpha:1.0];
-        break;
-    case BLUEWAKE_TOUCH_Z: fill = [UIColor colorWithRed:0.38 green:0.18 blue:0.58 alpha:0.94]; break;
-    case BLUEWAKE_TOUCH_START: fill = [UIColor colorWithWhite:0.28 alpha:0.92]; break;
-    default: break;
+    BWGameButton* button = [BWGameButton buttonWithType:UIButtonTypeCustom];
+    // A button shows what it does: its icon where it has one, else its short name.
+    NSString* icon = BWTouchIconName(mask);
+    if (icon != nil) {
+        NSString* path = [NSBundle.mainBundle pathForResource:icon ofType:@"png"];
+        [button setImage:[UIImage imageWithContentsOfFile:path] forState:UIControlStateNormal];
+    } else {
+        [button setTitle:label forState:UIControlStateNormal];
+        [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.9] forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightBold];
     }
-    [button setTitleColor:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:18.0 weight:UIFontWeightBold];
-    button.backgroundColor = fill;
-    button.layer.borderWidth = 2.0;
-    button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.36].CGColor;
+    // Translucent and neutral in color, so the game shows through.
+    button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    button.layer.borderWidth = 1.5;
+    button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.42].CGColor;
     button.accessibilityLabel = label;
     button.accessibilityIdentifier = identifier;
     button.inputMask = mask;
@@ -2126,9 +2210,10 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     const CGFloat scale = base * size;
     const CGFloat margin = pad ? 34.0 : std::max<CGFloat>(8.0, 18.0 * base);
     const CGFloat stick = (pad ? 172.0 : 126.0 * base) * size;
-    const CGFloat small = (pad ? 62.0 : 46.0 * base) * size;
-    const CGFloat medium = (pad ? 76.0 : 58.0 * base) * size;
-    const CGFloat large = (pad ? 104.0 : 78.0 * base) * size;
+    // Smaller than before, so the buttons cover less of the picture.
+    const CGFloat small = (pad ? 50.0 : 38.0 * base) * size;
+    const CGFloat medium = (pad ? 62.0 : 46.0 * base) * size;
+    const CGFloat large = (pad ? 84.0 : 62.0 * base) * size;
     const CGFloat camera = (pad ? 112.0 : 86.0 * base) * size;
     _columnFrames = phone ? [self phoneColumnFramesInSafeArea:safe size:size] : nil;
 
@@ -2196,8 +2281,13 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [self place:_dpadGroup identifier:@"DPad" defaultFrame:dpadDefault];
     [self layoutDPadButtons];
 
-    for (BWGameButton* button in _buttons)
-        button.layer.cornerRadius = std::min(button.bounds.size.width, button.bounds.size.height) * 0.5;
+    for (BWGameButton* button in _buttons) {
+        const CGFloat side = std::min(button.bounds.size.width, button.bounds.size.height);
+        button.layer.cornerRadius = side * 0.5;
+        // The icon sits inside the ring with room to spare, so the ring stays visible.
+        const CGFloat inset = side * 0.24;
+        button.imageEdgeInsets = UIEdgeInsetsMake(inset, inset, inset, inset);
+    }
 
     _menuButton.frame = CGRectMake(CGRectGetMaxX(safe) - 40.0 - 12.0, CGRectGetMinY(safe) + 12.0, 40.0, 40.0);
     _fpsLabel.frame = CGRectMake(CGRectGetMinX(safe) + 12.0, CGRectGetMinY(safe) + 12.0, 250.0, 28.0);
@@ -2316,16 +2406,25 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     const CGFloat alpha = _editing ? 1.0 : BWDefault(kOpacityKey, 0.8);
     for (UIView* control in [self gameplayControls]) {
         BOOL extraHidden = NO;
-        if ([control isKindOfClass:BWGameButton.class]) {
+        if (control == _cStick) {
+            // The camera turns with a drag over the screen now (cameraDragged:).
+            extraHidden = !_editing;
+        } else if ([self isDPadButton:control]) {
+            // The D-pad only shows on the maps that read it (refreshMapState).
+            extraHidden = !_onMap && !_editing;
+        } else if ([control isKindOfClass:BWGameButton.class]) {
+            // Jump, Sprint and the shoulders are not in the default layout; the movement
+            // extras switch brings them back.
             const uint16_t mask = ((BWGameButton*)control).inputMask;
-            extraHidden = (mask == BLUEWAKE_TOUCH_JUMP || mask == BLUEWAKE_TOUCH_SPRINT)
+            extraHidden = (mask == BLUEWAKE_TOUCH_JUMP || mask == BLUEWAKE_TOUCH_SPRINT ||
+                           mask == BLUEWAKE_TOUCH_L || mask == BLUEWAKE_TOUCH_R)
                 && !BWBoolDefault(kMovementExtrasKey, NO) && !_editing;
         }
         control.hidden = hidden || extraHidden;
         control.userInteractionEnabled = !control.hidden;
         control.alpha = alpha;
-        UIColor* border = [UIColor colorWithWhite:1.0 alpha:0.68];
-        CGFloat width = 2.0;
+        UIColor* border = [UIColor colorWithWhite:1.0 alpha:0.42];
+        CGFloat width = 1.5;
         if (_editing && ![self isDPadButton:control]) {
             border = control == _selected ? [UIColor colorWithRed:0.20 green:0.78 blue:1.0 alpha:1.0]
                                           : [UIColor colorWithRed:1.0 green:0.78 blue:0.20 alpha:0.95];

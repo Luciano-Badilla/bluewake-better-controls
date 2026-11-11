@@ -201,6 +201,11 @@ file(GLOB BLUEWAKE_APP_ICONS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/reso
 target_sources(BlueWake PRIVATE ${BLUEWAKE_APP_ICONS})
 set_source_files_properties(${BLUEWAKE_APP_ICONS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
+# Button icons for the touch controls (resources/touch_*.png, see touch_icons_CREDITS.md).
+file(GLOB BLUEWAKE_TOUCH_ICONS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/touch_*.png")
+target_sources(BlueWake PRIVATE ${BLUEWAKE_TOUCH_ICONS})
+set_source_files_properties(${BLUEWAKE_TOUCH_ICONS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+
 # Aurora's bundled pipeline cache (initial_pipeline_cache.db at the bundle
 # root): the pipeline descriptions a play session builds, merged into a new
 # player's cache on first launch and compiled in the background. Without it
