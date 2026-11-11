@@ -377,7 +377,7 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
 }
 
 // The icon that stands for each touch button (resources/touch_*.png). Buttons
-// without one, the L and R shoulders and the D-pad arrows, keep their text.
+// without one, the D-pad arrows, Jump and Sprint, keep their text.
 static NSString* BWTouchIconName(uint16_t mask) {
     switch (mask) {
     case BLUEWAKE_TOUCH_A: return @"touch_action";
@@ -386,6 +386,8 @@ static NSString* BWTouchIconName(uint16_t mask) {
     case BLUEWAKE_TOUCH_X: return @"touch_bow";
     case BLUEWAKE_TOUCH_Y: return @"touch_boomerang";
     case BLUEWAKE_TOUCH_START: return @"touch_pause";
+    case BLUEWAKE_TOUCH_L: return @"touch_target";
+    case BLUEWAKE_TOUCH_R: return @"touch_shield";
     default: return nil;
     }
 }
@@ -2255,7 +2257,7 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
         : pad ? BWFrameAtNormalizedCenter(safe, 0.9542459736, 0.7869700103, small, small)
               : CGRectMake(CGRectGetMinX(a.frame) - small - 8.0 * scale, CGRectGetMinY(a.frame) - small + 8.0, small, small)];
 
-    const CGFloat shoulder = (pad ? 132.0 : 94.0 * base) * size;
+    const CGFloat shoulder = small;  // the shoulder buttons are discs now, like the others
     const CGFloat shoulderY = CGRectGetMinY(safe) + (pad ? 92.0 : 68.0 * base);
     [self place:[self buttonWithMask:BLUEWAKE_TOUCH_L] identifier:@"L" defaultFrame:
         phone ? BWFrameAtNormalizedCenter(safe, 0.0905833333, 0.2539977477, shoulder, small)
@@ -2337,12 +2339,12 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     return @{
         // left column, top to bottom
         @"Start": at(lx, top + 24.0, col * 0.72, col * 0.32),
-        @"L": at(lx, top + 24.0 + col * 0.46, col * 0.86, pillH),
+        @"L": at(lx, top + 24.0 + col * 0.46, pillH, pillH),
         @"DPad": at(lx, top + h * 0.47, 3.0 * d, 3.0 * d),
         @"move": at(lx, bottom - stick * 0.5 - 6.0, stick, stick),
         // right column below the menu button: Z and R, then Y and X, then B and A
         @"Z": at(rx - col * 0.5 + z * 0.5, top + 80.0, z, z),
-        @"R": at(rx + col * 0.5 - col * 0.29, top + 80.0, col * 0.58, pillH),
+        @"R": at(rx + col * 0.5 - col * 0.29, top + 80.0, pillH, pillH),
         @"Y": at(rx - col * 0.25, top + h * 0.34, face, face),
         @"X": at(rx + col * 0.27, top + h * 0.34 + col * 0.10, face, face),
         @"A": at(rx + col * 0.16, top + h * 0.53, a, a),
@@ -2416,11 +2418,10 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
             // The D-pad only shows on the maps that read it (refreshMapState).
             extraHidden = !_onMap && !_editing;
         } else if ([control isKindOfClass:BWGameButton.class]) {
-            // Jump, Sprint and the shoulders are not in the default layout; the movement
-            // extras switch brings them back.
+            // Jump and Sprint are not in the default layout; the movement extras switch
+            // brings them back.
             const uint16_t mask = ((BWGameButton*)control).inputMask;
-            extraHidden = (mask == BLUEWAKE_TOUCH_JUMP || mask == BLUEWAKE_TOUCH_SPRINT ||
-                           mask == BLUEWAKE_TOUCH_L || mask == BLUEWAKE_TOUCH_R)
+            extraHidden = (mask == BLUEWAKE_TOUCH_JUMP || mask == BLUEWAKE_TOUCH_SPRINT)
                 && !BWBoolDefault(kMovementExtrasKey, NO) && !_editing;
         }
         control.hidden = hidden || extraHidden;
