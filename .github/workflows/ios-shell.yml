@@ -32,7 +32,8 @@ jobs:
 
       - name: Configure (device)
         run: |
-          DAWN_CONFIG=$(find build/ios-deps -name DawnConfig.cmake | head -1)
+          # Dawn_DIR must be absolute: CMake resolved the relative path against the wrong folder.
+          DAWN_CONFIG=$(find "$PWD/build/ios-deps" -name DawnConfig.cmake | head -1)
           test -n "$DAWN_CONFIG"
           cmake -S apple/ios -B build/ios-device -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
@@ -57,3 +58,15 @@ jobs:
           name: BlueWake-shell-unsigned
           path: BlueWake-shell-unsigned.ipa
           retention-days: 14
+
+      - name: Keep the CMake and build logs when the job fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmake-logs
+          path: |
+            build/ios-device/CMakeFiles/*.log
+            build/ios-device/CMakeCache.txt
+            build/ios-device/CMakeFiles/CMakeOutput.log
+          if-no-files-found: ignore
+          retention-days: 7
