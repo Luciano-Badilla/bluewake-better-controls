@@ -299,7 +299,9 @@ static CAShapeLayer* BWRimLayer() {
     if (_badge != nil) {
         const CGFloat d = side * 0.34;
         _badge.bounds = CGRectMake(0, 0, d, d);
-        _badge.center = CGPointMake(self.bounds.size.width * 0.78, self.bounds.size.height * 0.78);
+        // Centred on the rim at 45 degrees, so half the badge hangs outside the disc.
+        const CGFloat rim = side * 0.5 * 0.70710678;
+        _badge.center = CGPointMake(self.bounds.size.width * 0.5 + rim, self.bounds.size.height * 0.5 + rim);
         _badge.layer.cornerRadius = d * 0.5;
         _badge.font = [UIFont systemFontOfSize:d * 0.60 weight:UIFontWeightHeavy];
     }
@@ -595,6 +597,7 @@ static UIColor* BWBadgeTextColor(uint16_t mask) {
     BWStickView* _moveStick;
     BWStickView* _cStick;
     BWStickZone* _moveZone;     // the left half, where a finger brings up the floating move stick
+    BWGameButton* _bagButton;   // the backpack: opens the inventory with a START press
     BOOL _floatingActive;       // a finger is holding the move stick now
     UIView* _dpadGroup;
     NSMutableArray<BWGameButton*>* _buttons;
@@ -2282,6 +2285,11 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [self addButton:@"Y" mask:BLUEWAKE_TOUCH_Y identifier:@"Y"];
     [self addButton:@"Z" mask:BLUEWAKE_TOUCH_Z identifier:@"Z"];
     [self addButton:@"START" mask:BLUEWAKE_TOUCH_START identifier:@"Start"];
+    // The backpack opens the inventory: a START press, drawn with the system's backpack symbol.
+    UIImage* bag = [[UIImage systemImageNamed:@"backpack.fill"] imageWithTintColor:UIColor.whiteColor
+                                                                       renderingMode:UIImageRenderingModeAlwaysOriginal];
+    _bagButton = [self addButton:@"Mochila" mask:BLUEWAKE_TOUCH_START identifier:@"Backpack" image:bag badge:nil];
+    _bagButton.accessibilityLabel = @"Backpack (inventory)";
     [self addButton:@"L" mask:BLUEWAKE_TOUCH_L identifier:@"L"];
     [self addButton:@"R" mask:BLUEWAKE_TOUCH_R identifier:@"R"];
     [self addButton:@"Jump" mask:BLUEWAKE_TOUCH_JUMP identifier:@"Jump"];
@@ -2324,21 +2332,31 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
 }
 
 - (void)addButton:(NSString*)label mask:(uint16_t)mask identifier:(NSString*)identifier {
-    BWGameButton* button = [BWGameButton buttonWithType:UIButtonTypeCustom];
     // A button shows what it does: its icon where it has one, else its short name.
     NSString* icon = BWTouchIconName(mask);
+    UIImage* image = nil;
     if (icon != nil) {
         NSString* path = [NSBundle.mainBundle pathForResource:icon ofType:@"png"];
-        [button setImage:[UIImage imageWithContentsOfFile:path] forState:UIControlStateNormal];
+        image = [UIImage imageWithContentsOfFile:path];
+    }
+    [self addButton:label mask:mask identifier:identifier image:image badge:BWBadgeLetter(mask)];
+}
+
+// A button with its own image (nil: its label as text) and badge (nil: none).
+- (BWGameButton*)addButton:(NSString*)label mask:(uint16_t)mask identifier:(NSString*)identifier
+                     image:(UIImage*)image badge:(NSString*)letter {
+    BWGameButton* button = [BWGameButton buttonWithType:UIButtonTypeCustom];
+    if (image != nil) {
+        [button setImage:image forState:UIControlStateNormal];
     } else {
         [button setTitle:label forState:UIControlStateNormal];
         [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.9] forState:UIControlStateNormal];
         button.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightBold];
     }
     // The disc does the drawing; the button itself is clear. Its badge names the
-    // controller button it presses (none on the D-pad, Jump and Sprint).
+    // controller button it presses (none on the D-pad, Jump, Sprint and the backpack).
     button.backgroundColor = UIColor.clearColor;
-    [button styleWithBadge:BWBadgeLetter(mask) badgeColor:BWBadgeColor(mask) badgeText:BWBadgeTextColor(mask)];
+    [button styleWithBadge:letter badgeColor:BWBadgeColor(mask) badgeText:BWBadgeTextColor(mask)];
     button.accessibilityLabel = label;
     button.accessibilityIdentifier = identifier;
     button.inputMask = mask;
@@ -2348,6 +2366,7 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [_buttons addObject:button];
     [self addSubview:button];
     [self addEditGestures:button];
+    return button;
 }
 
 - (BWGameButton*)buttonWithMask:(uint16_t)mask {
@@ -2485,7 +2504,9 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     _columnFrames = phone ? [self phoneColumnFramesInSafeArea:safe size:size] : nil;
     _moveZone.frame = CGRectMake(0, 0, self.bounds.size.width * 0.5, self.bounds.size.height);
 
-    [self place:_moveStick identifier:@"move" defaultFrame:
+    // A layout pass while a finger holds the floating stick leaves it where the finger put it.
+    if (!_floatingActive)
+        [self place:_moveStick identifier:@"move" defaultFrame:
         phone ? BWFrameAtNormalizedCenter(safe, 0.1234722222, 0.7803490991, stick, stick)
         : pad ? BWFrameAtNormalizedCenter(safe, 0.1310395315, 0.7905894519, stick, stick)
               : CGRectMake(CGRectGetMinX(safe) + margin, CGRectGetMaxY(safe) - stick - margin, stick, stick)];
@@ -2531,11 +2552,16 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
         phone ? BWFrameAtNormalizedCenter(safe, 0.9712500000, 0.4350788288, small, small)
         : pad ? BWFrameAtNormalizedCenter(safe, 0.8275988287, 0.7213029990, small, small)
               : CGRectMake(CGRectGetMaxX(safe) - margin - shoulder - small - 12.0 * scale, shoulderY, small, small)];
-    const CGFloat startWidth = (pad ? 116.0 : 92.0 * base) * size;
+    const CGFloat startWidth = small;  // the pause button is a circle, as wide as it is tall
     [self place:[self buttonWithMask:BLUEWAKE_TOUCH_START] identifier:@"Start" defaultFrame:
         phone ? BWFrameAtNormalizedCenter(safe, 0.0902222222, 0.1128941441, startWidth, small)
         : pad ? BWFrameAtNormalizedCenter(safe, 0.8967789165, 0.5600000000, startWidth, small)
               : CGRectMake(CGRectGetMidX(safe) - startWidth * 0.5, CGRectGetMinY(safe) + margin, startWidth, small)];
+    // The backpack sits beside the pause button, the same size, and can be moved in the editor.
+    const CGRect startFrame = [self buttonWithMask:BLUEWAKE_TOUCH_START].frame;
+    [self place:_bagButton identifier:@"Backpack" defaultFrame:
+        CGRectMake(CGRectGetMaxX(startFrame) + startFrame.size.width * 0.3, CGRectGetMinY(startFrame),
+                   startFrame.size.width, startFrame.size.height)];
 
     const CGFloat d = (pad ? 48.0 : 36.0 * base) * size;
     [self place:[self buttonWithMask:BLUEWAKE_TOUCH_JUMP] identifier:@"Jump" defaultFrame:
@@ -2600,7 +2626,7 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     const CGFloat r = col * 0.58, diag = r * 0.7071;
     return @{
         // left column: pause at the top, the shoulder, the D-pad on maps, and the stick low
-        @"Start": at(lx, top + 28.0, col * 0.78, col * 0.34),
+        @"Start": at(lx, top + 28.0, col * 0.34, col * 0.34),
         @"L": at(lx, top + 110.0, pillH, pillH),
         @"DPad": at(lx, top + h * 0.50, 3.0 * d, 3.0 * d),
         @"move": at(lx, bottom - stick * 0.5 - 6.0, stick, stick),
