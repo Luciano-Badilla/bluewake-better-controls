@@ -132,6 +132,10 @@ static double g_sum_x, g_sum_y;
 // thread only adds to these; view_frame, on the game thread, takes them into the
 // sums above, so the two threads never write the same variable.
 static _Atomic double g_touch_x, g_touch_y;
+// A two-finger pinch (bluewake_mouse_camera_touch_pinch): the change it makes to the
+// telescope's or Picto Box's zoom level (0..1, 1x..9x). The touch thread adds to it;
+// aim_frame takes it on the game thread each player update, in any view.
+static _Atomic double g_touch_zoom;
 // The part of a finger's drag the view has not taken yet (game thread only). The view
 // takes kTouchEase of it each frame, so a drag turns the camera smoothly and eases out.
 static double g_touch_pending_x, g_touch_pending_y;
@@ -532,6 +536,18 @@ void bluewake_mouse_camera_touch_drag(double dx, double dy) {
     }
     old = atomic_load(&g_touch_y);
     while (!atomic_compare_exchange_weak(&g_touch_y, &old, old + dy)) {
+    }
+}
+
+// iPhone and iPad: a two-finger pinch zooms the telescope and the Picto Box, as the
+// C-stick's up and down did. `level` is the change in their zoom level (0..1 is
+// 1x..9x; positive zooms in). Ignored unless the mouse camera is on and not blocked,
+// like the drags; outside those two views aim_frame drops it.
+void bluewake_mouse_camera_touch_pinch(double level) {
+    if (!g_enabled || g_blocked)
+        return;
+    double old = atomic_load(&g_touch_zoom);
+    while (!atomic_compare_exchange_weak(&g_touch_zoom, &old, old + level)) {
     }
 }
 
@@ -946,6 +962,8 @@ static bool turn_player(CPUState* cpu, u32 player, int delta) {
 // at the new aim with no easing lag; anything the game refuses (a wall, the
 // stick's own turn) still eases.
 static void aim_frame(CPUState* cpu, u32 player) {
+    // A pinch is taken every update, so none waits for a view that zooms.
+    const double pinch = atomic_exchange(&g_touch_zoom, 0.0);
     const u32 process = mem_read32(cpu, kCameraPointer);
     if (!guest_pointer(process))
         return;
@@ -985,16 +1003,16 @@ static void aim_frame(CPUState* cpu, u32 player) {
     stick_yaw += gyro_yaw;
     stick_pitch += gyro_pitch;
     if (g_sum_x == 0.0 && g_sum_y == 0.0 && g_wheel == 0.0 && stick_yaw == 0.0 && stick_pitch == 0.0 &&
-        pad_zoom == 0.0)
+        pad_zoom == 0.0 && pinch == 0.0)
         return;
     const bool ready = camera_ready(cpu, camera);
-    // The wheel (and the D-pad): the telescope's and the Picto Box's own zoom
+    // The wheel, the D-pad and a pinch: the telescope's and the Picto Box's own zoom
     // (the C-stick's). It zooms while the game holds the aim too: Aryll's
     // telescope lesson locks the view on the postman and waits for a full zoom.
-    if (ready && (g_wheel != 0.0 || pad_zoom != 0.0)) {
+    if (ready && (g_wheel != 0.0 || pad_zoom != 0.0 || pinch != 0.0)) {
         const float level = read_f32(cpu, camera + kSubjectZoom);
         if ((mem_read16(cpu, style + kStyleFlags) & kStyleZoom) != 0u && level >= 0.0f && level <= 1.0f) {
-            double next = level + g_wheel * kScopeZoomPerNotch + pad_zoom;
+            double next = level + g_wheel * kScopeZoomPerNotch + pad_zoom + pinch;
             next = next < 0.0 ? 0.0 : next > 1.0 ? 1.0 : next;
             write_f32(cpu, camera + kSubjectZoom, (float)next);
         }

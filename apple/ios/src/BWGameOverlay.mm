@@ -37,6 +37,7 @@ extern "C" {
 // The touch camera and the D-pad on maps: plain C in mouse_camera.c and dpad_menus.c.
 extern "C" void bluewake_mouse_camera_configure(bool enabled, double sensitivity, bool invert_y);
 extern "C" void bluewake_mouse_camera_touch_drag(double dx, double dy);
+extern "C" void bluewake_mouse_camera_touch_pinch(double level);
 extern "C" bool bluewake_dpad_menu_state(uint8_t* open, uint8_t* status);
 // Degrees the camera turns per point of finger travel, times the mouse camera's
 // sensitivity. Pointer travel uses 1.0; a finger covers a small screen, so a drag
@@ -97,26 +98,67 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
                       CGRectGetMinY(safe) + y * safe.size.height - h * 0.5, w, h);
 }
 
+// ---------------------------------------------------------------- look
+
+// The touch controls' look: a sea-glass disc, light at the top and see-through toward
+// the bottom, with a gold ring. The stick and the buttons share it.
+static NSArray* BWGlassColors() {
+    return @[ (id)[UIColor colorWithRed:0.78 green:0.93 blue:1.00 alpha:0.46].CGColor,
+              (id)[UIColor colorWithRed:0.22 green:0.50 blue:0.64 alpha:0.26].CGColor,
+              (id)[UIColor colorWithRed:0.04 green:0.20 blue:0.32 alpha:0.40].CGColor ];
+}
+
+static CAGradientLayer* BWGlassLayer() {
+    CAGradientLayer* glass = [CAGradientLayer layer];
+    glass.colors = BWGlassColors();
+    glass.locations = @[ @0.0, @0.45, @1.0 ];
+    glass.startPoint = CGPointMake(0.5, 0.0);
+    glass.endPoint = CGPointMake(0.5, 1.0);
+    glass.masksToBounds = YES;
+    return glass;
+}
+
+static CAShapeLayer* BWRimLayer() {
+    CAShapeLayer* rim = [CAShapeLayer layer];
+    rim.fillColor = nil;
+    rim.strokeColor = [UIColor colorWithRed:0.96 green:0.78 blue:0.30 alpha:0.85].CGColor;
+    rim.lineWidth = 2.5;
+    return rim;
+}
+
 // ---------------------------------------------------------------- stick
 
 @interface BWStickView : UIView
 @property(nonatomic, copy) void (^valueChanged)(float x, float y);
 - (void)applyBaseColor:(UIColor*)base thumbColor:(UIColor*)thumb;
 - (void)reset;
+// A floating stick: the thumb follows the finger, from the stick's centre where it went down.
+- (void)followTouch:(UITouch*)touch;
 @end
 
 @implementation BWStickView {
     UIView* _thumb;
     float _x, _y;
+    CAGradientLayer* _glass;   // the sea-glass fill over the base
+    CAShapeLayer* _rim;        // the gold ring around it
+    CAGradientLayer* _thumbGlass;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
         self.multipleTouchEnabled = NO;
-        self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.34].CGColor;
-        self.layer.borderWidth = 2.0;
+        self.layer.shadowColor = UIColor.blackColor.CGColor;
+        self.layer.shadowOpacity = 0.30;
+        self.layer.shadowRadius = 3.0;
+        self.layer.shadowOffset = CGSizeMake(0, 2);
+        _glass = BWGlassLayer();
+        [self.layer addSublayer:_glass];
+        _rim = BWRimLayer();
+        [self.layer addSublayer:_rim];
         _thumb = [[UIView alloc] initWithFrame:CGRectZero];
         _thumb.userInteractionEnabled = NO;
+        _thumbGlass = BWGlassLayer();
+        [_thumb.layer addSublayer:_thumbGlass];
         [self addSubview:_thumb];
         self.isAccessibilityElement = YES;
         self.accessibilityTraits = UIAccessibilityTraitAllowsDirectInteraction;
@@ -128,9 +170,21 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
     [super layoutSubviews];
     CGFloat side = std::min(self.bounds.size.width, self.bounds.size.height);
     self.layer.cornerRadius = side * 0.5;
+    self.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:self.bounds].CGPath;
+    _glass.frame = self.bounds;
+    _glass.cornerRadius = side * 0.5;
+    _rim.frame = self.bounds;
+    _rim.path = [UIBezierPath bezierPathWithOvalInRect:CGRectInset(self.bounds, 1.25, 1.25)].CGPath;
     CGFloat thumb = side * 0.42;
     _thumb.bounds = CGRectMake(0, 0, thumb, thumb);
     _thumb.layer.cornerRadius = thumb * 0.5;
+    _thumb.layer.shadowColor = UIColor.blackColor.CGColor;
+    _thumb.layer.shadowOpacity = 0.35;
+    _thumb.layer.shadowRadius = 3.0;
+    _thumb.layer.shadowOffset = CGSizeMake(0, 2);
+    _thumb.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_thumb.bounds].CGPath;
+    _thumbGlass.frame = _thumb.bounds;
+    _thumbGlass.cornerRadius = thumb * 0.5;
     [self placeThumb];
 }
 
@@ -169,6 +223,8 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
         self.valueChanged(_x, _y);
 }
 
+- (void)followTouch:(UITouch*)touch { [self handleTouch:touch]; }
+
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self handleTouch:touches.anyObject]; }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self handleTouch:touches.anyObject]; }
 - (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self reset]; }
@@ -179,15 +235,74 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
 
 @interface BWGameButton : UIButton
 @property(nonatomic) uint16_t inputMask;
+// The sea-glass disc with its drop shadow, and the badge in the bottom-right corner
+// showing the controller button this control presses (nil letter: no badge).
+- (void)styleWithBadge:(NSString*)letter badgeColor:(UIColor*)color badgeText:(UIColor*)text;
 @end
-@implementation BWGameButton
+@implementation BWGameButton {
+    UIView* _disc;
+    CAGradientLayer* _glass;
+    CAShapeLayer* _rim;
+    UILabel* _badge;
+}
+
+- (void)styleWithBadge:(NSString*)letter badgeColor:(UIColor*)color badgeText:(UIColor*)text {
+    _disc = [[UIView alloc] initWithFrame:CGRectZero];
+    _disc.userInteractionEnabled = NO;
+    _glass = BWGlassLayer();
+    [_disc.layer addSublayer:_glass];
+    _rim = BWRimLayer();
+    [_disc.layer addSublayer:_rim];
+    _disc.layer.shadowColor = UIColor.blackColor.CGColor;
+    _disc.layer.shadowOpacity = 0.30;
+    _disc.layer.shadowRadius = 3.0;
+    _disc.layer.shadowOffset = CGSizeMake(0, 2);
+    [self insertSubview:_disc atIndex:0];
+    if (self.imageView != nil) {
+        self.imageView.layer.shadowColor = UIColor.blackColor.CGColor;
+        self.imageView.layer.shadowOpacity = 0.45;
+        self.imageView.layer.shadowRadius = 2.0;
+        self.imageView.layer.shadowOffset = CGSizeMake(0, 1);
+    }
+    if (letter != nil) {
+        _badge = [[UILabel alloc] initWithFrame:CGRectZero];
+        _badge.text = letter;
+        _badge.textAlignment = NSTextAlignmentCenter;
+        _badge.textColor = text;
+        _badge.backgroundColor = color;
+        _badge.layer.masksToBounds = YES;
+        _badge.layer.borderWidth = 1.0;
+        _badge.layer.borderColor = [UIColor colorWithRed:0.96 green:0.78 blue:0.30 alpha:0.90].CGColor;
+        _badge.userInteractionEnabled = NO;
+        _badge.isAccessibilityElement = NO;
+        [self addSubview:_badge];
+    }
+    [self setNeedsLayout];
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
+    const CGFloat side = std::min(self.bounds.size.width, self.bounds.size.height);
     // A button's icon is scaled to fit inside the disc, with a margin all round.
     // (The PNGs are 192 pixels, so they would overflow at their natural size.)
-    const CGFloat inset = std::min(self.bounds.size.width, self.bounds.size.height) * 0.24;
+    const CGFloat inset = side * 0.24;
     self.imageView.contentMode = UIViewContentModeScaleAspectFit;
     self.imageView.frame = CGRectInset(self.bounds, inset, inset);
+    if (_disc == nil)
+        return;
+    _disc.frame = self.bounds;
+    _disc.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:self.bounds].CGPath;
+    _glass.frame = self.bounds;
+    _glass.cornerRadius = side * 0.5;
+    _rim.frame = self.bounds;
+    _rim.path = [UIBezierPath bezierPathWithOvalInRect:CGRectInset(self.bounds, 1.25, 1.25)].CGPath;
+    if (_badge != nil) {
+        const CGFloat d = side * 0.34;
+        _badge.bounds = CGRectMake(0, 0, d, d);
+        _badge.center = CGPointMake(self.bounds.size.width * 0.78, self.bounds.size.height * 0.78);
+        _badge.layer.cornerRadius = d * 0.5;
+        _badge.font = [UIFont systemFontOfSize:d * 0.60 weight:UIFontWeightHeavy];
+    }
 }
 @end
 
@@ -222,6 +337,50 @@ static CGRect BWFrameAtNormalizedCenter(CGRect safe, CGFloat x, CGFloat y, CGFlo
 - (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
     UIView* hit = [super hitTest:point withEvent:event];
     return hit == self ? nil : hit;
+}
+@end
+
+// The left half of the screen. A finger that lands here brings the floating move stick
+// up under it. The zone follows only its first finger; the buttons above it take theirs.
+@interface BWStickZone : UIView
+@property(nonatomic, copy) void (^touchBegan)(UITouch* touch);
+@property(nonatomic, copy) void (^touchMoved)(UITouch* touch);
+@property(nonatomic, copy) void (^touchEnded)(void);
+@end
+@implementation BWStickZone {
+    UITouch* _finger; // the finger the stick follows
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.multipleTouchEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    if (_finger != nil)
+        return;
+    _finger = touches.anyObject;
+    if (self.touchBegan != nil)
+        self.touchBegan(_finger);
+}
+
+- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    if (_finger != nil && [touches containsObject:_finger] && self.touchMoved != nil)
+        self.touchMoved(_finger);
+}
+
+- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self liftFingers:touches]; }
+- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self liftFingers:touches]; }
+
+- (void)liftFingers:(NSSet<UITouch*>*)touches {
+    if (_finger == nil || ![touches containsObject:_finger])
+        return;
+    _finger = nil;
+    if (self.touchEnded != nil)
+        self.touchEnded();
 }
 @end
 
@@ -357,6 +516,9 @@ static UIAlertAction* BWHDAction(UIAlertController* alert, NSString* title, UIAl
 - (void)beginLayoutEditing;
 - (void)endLayoutEditing;
 - (void)clearTouchInput;
+- (void)floatingStickBegan:(UITouch*)touch;
+- (void)floatingStickMoved:(UITouch*)touch;
+- (void)floatingStickEnded;
 - (void)tapIdentifier:(NSString*)identifier holdSeconds:(double)hold;
 @end
 
@@ -393,11 +555,47 @@ static NSString* BWTouchIconName(uint16_t mask) {
     }
 }
 
+// The badge in a control's corner: the GameCube button it presses, in the colours the
+// controller's own buttons use (A green, B red, X and Y pale, Z violet, the rest slate).
+// Start shows "S". The D-pad, Jump and Sprint have no badge.
+static NSString* BWBadgeLetter(uint16_t mask) {
+    switch (mask) {
+    case BLUEWAKE_TOUCH_A: return @"A";
+    case BLUEWAKE_TOUCH_B: return @"B";
+    case BLUEWAKE_TOUCH_X: return @"X";
+    case BLUEWAKE_TOUCH_Y: return @"Y";
+    case BLUEWAKE_TOUCH_Z: return @"Z";
+    case BLUEWAKE_TOUCH_START: return @"S";
+    case BLUEWAKE_TOUCH_L: return @"L";
+    case BLUEWAKE_TOUCH_R: return @"R";
+    default: return nil;
+    }
+}
+
+static UIColor* BWBadgeColor(uint16_t mask) {
+    switch (mask) {
+    case BLUEWAKE_TOUCH_A: return [UIColor colorWithRed:0.20 green:0.62 blue:0.30 alpha:0.95];
+    case BLUEWAKE_TOUCH_B: return [UIColor colorWithRed:0.80 green:0.20 blue:0.18 alpha:0.95];
+    case BLUEWAKE_TOUCH_Z: return [UIColor colorWithRed:0.42 green:0.30 blue:0.74 alpha:0.95];
+    case BLUEWAKE_TOUCH_X:
+    case BLUEWAKE_TOUCH_Y: return [UIColor colorWithRed:0.92 green:0.92 blue:0.90 alpha:0.95];
+    default: return [UIColor colorWithRed:0.20 green:0.22 blue:0.26 alpha:0.95];
+    }
+}
+
+static UIColor* BWBadgeTextColor(uint16_t mask) {
+    if (mask == BLUEWAKE_TOUCH_X || mask == BLUEWAKE_TOUCH_Y)
+        return [UIColor colorWithRed:0.12 green:0.12 blue:0.14 alpha:1.0];
+    return UIColor.whiteColor;
+}
+
 @implementation BWGameOverlay {
     BWMenuButton* _menuButton;
     BOOL _menuStale; // a switch changed while the menu stayed open
     BWStickView* _moveStick;
     BWStickView* _cStick;
+    BWStickZone* _moveZone;     // the left half, where a finger brings up the floating move stick
+    BOOL _floatingActive;       // a finger is holding the move stick now
     UIView* _dpadGroup;
     NSMutableArray<BWGameButton*>* _buttons;
     NSMutableArray<UIGestureRecognizer*>* _editGestures;
@@ -422,6 +620,7 @@ static NSString* BWTouchIconName(uint16_t mask) {
     NSTimer* _mapTimer;                  // checks whether a map that reads the D-pad is open
     BOOL _onMap;                         // the sea chart or a dungeon map is open
     UIPanGestureRecognizer* _cameraDrag; // a finger's drag over the game turns the camera
+    UIPinchGestureRecognizer* _cameraPinch; // two fingers pinched over the game zoom the telescope
     NSDictionary<NSString*, NSNumber*>* _launchMods;  // mod switches as this launch read them
     void (^_pickHandler)(NSArray<NSURL*>* urls);      // the open file picker's handler
     void (^_hdPickHandler)(BWHDScopedURL* picked);    // nil on cancel; called after dismissal
@@ -469,19 +668,26 @@ static NSString* BWTouchIconName(uint16_t mask) {
     [_fpsTimer invalidate];
     [_mapTimer invalidate];
     [_cameraDrag.view removeGestureRecognizer:_cameraDrag];
+    [_cameraPinch.view removeGestureRecognizer:_cameraPinch];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 // ---------------------------------------------------------------- touch camera and maps
 
 // A finger dragged over the game (not over a control) turns the camera, the way
-// pointer travel does on the Mac. The pan sits on the view the overlay is in, so it
-// sees the drags the overlay's pass-through hit test leaves to the game.
+// pointer travel does on the Mac, and two fingers pinched over it zoom the telescope
+// and the Picto Box, as the C-stick's up and down did. The gestures sit on the view
+// the overlay is in, so they see the touches the overlay's pass-through hit test
+// leaves to the game.
 - (void)didMoveToSuperview {
     [super didMoveToSuperview];
     if (_cameraDrag != nil) {
         [_cameraDrag.view removeGestureRecognizer:_cameraDrag];
         _cameraDrag = nil;
+    }
+    if (_cameraPinch != nil) {
+        [_cameraPinch.view removeGestureRecognizer:_cameraPinch];
+        _cameraPinch = nil;
     }
     if (self.superview == nil)
         return;
@@ -492,6 +698,12 @@ static NSString* BWTouchIconName(uint16_t mask) {
     drag.delegate = self;
     [self.superview addGestureRecognizer:drag];
     _cameraDrag = drag;
+    UIPinchGestureRecognizer* pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self
+                                                                                action:@selector(cameraPinched:)];
+    pinch.cancelsTouchesInView = NO;
+    pinch.delegate = self;
+    [self.superview addGestureRecognizer:pinch];
+    _cameraPinch = pinch;
 }
 
 - (void)cameraDragged:(UIPanGestureRecognizer*)drag {
@@ -501,8 +713,17 @@ static NSString* BWTouchIconName(uint16_t mask) {
         bluewake_mouse_camera_touch_drag(travel.x, travel.y);
 }
 
+- (void)cameraPinched:(UIPinchGestureRecognizer*)pinch {
+    // The scale since the last report, read and reset each time, so it is a change: a
+    // doubling of the fingers' spread moves the zoom level by half its 0..1 range.
+    const CGFloat scale = pinch.scale;
+    pinch.scale = 1.0;
+    if (scale > 0.0 && scale != 1.0)
+        bluewake_mouse_camera_touch_pinch(0.5 * std::log2(scale));
+}
+
 - (BOOL)gestureRecognizer:(UIGestureRecognizer*)recognizer shouldReceiveTouch:(UITouch*)touch {
-    if (recognizer != _cameraDrag)
+    if (recognizer != _cameraDrag && recognizer != _cameraPinch)
         return YES;
     // Only the free screen: not a control, not the settings panel, not the layout editor.
     if (_editing || !_settingsPanel.hidden)
@@ -2035,7 +2256,16 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
 // ---------------------------------------------------------------- controls
 
 - (void)buildTouchControls {
+    // The left half of the screen comes first, so the stick and the buttons sit above it.
+    _moveZone = [[BWStickZone alloc] initWithFrame:CGRectZero];
+    __weak BWGameOverlay* zoneOwner = self;
+    _moveZone.touchBegan = ^(UITouch* touch) { [zoneOwner floatingStickBegan:touch]; };
+    _moveZone.touchMoved = ^(UITouch* touch) { [zoneOwner floatingStickMoved:touch]; };
+    _moveZone.touchEnded = ^{ [zoneOwner floatingStickEnded]; };
+    [self addSubview:_moveZone];
     _moveStick = [self makeStick];
+    _moveStick.userInteractionEnabled = NO; // the zone takes its touches, so it cannot hold a finger
+    _moveStick.hidden = YES;
     _moveStick.accessibilityLabel = @"Move stick";
     _moveStick.accessibilityIdentifier = @"move";
     [_moveStick applyBaseColor:[UIColor colorWithWhite:1.0 alpha:0.12]
@@ -2105,10 +2335,10 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
         [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.9] forState:UIControlStateNormal];
         button.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightBold];
     }
-    // Translucent and neutral in color, so the game shows through.
-    button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    button.layer.borderWidth = 1.5;
-    button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.42].CGColor;
+    // The disc does the drawing; the button itself is clear. Its badge names the
+    // controller button it presses (none on the D-pad, Jump and Sprint).
+    button.backgroundColor = UIColor.clearColor;
+    [button styleWithBadge:BWBadgeLetter(mask) badgeColor:BWBadgeColor(mask) badgeText:BWBadgeTextColor(mask)];
     button.accessibilityLabel = label;
     button.accessibilityIdentifier = identifier;
     button.inputMask = mask;
@@ -2192,11 +2422,37 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     }
 }
 
+// The floating move stick: a finger on the left half brings the stick up under it, and
+// the thumb follows that finger until it lifts. Editing and a hidden layer take no touches.
+- (void)floatingStickBegan:(UITouch*)touch {
+    if (_editing || _moveZone.hidden || !_settingsPanel.hidden)
+        return;
+    _floatingActive = YES;
+    _moveStick.center = [touch locationInView:self];
+    _moveStick.hidden = NO;
+    [_moveStick followTouch:touch];
+}
+
+- (void)floatingStickMoved:(UITouch*)touch {
+    if (_floatingActive)
+        [_moveStick followTouch:touch];
+}
+
+- (void)floatingStickEnded {
+    if (!_floatingActive)
+        return;
+    _floatingActive = NO;
+    _moveStick.hidden = YES;
+    [_moveStick reset];
+}
+
 - (void)clearTouchInput {
     // Clear the overlay's state too: the next touch republishes the whole pad.
     for (BWGameButton* button in _buttons)
         button.transform = CGAffineTransformIdentity;
     _pad = BlueWakeTouchPad{};
+    _floatingActive = NO;
+    _moveStick.hidden = YES;
     [_moveStick reset];
     [_cStick reset];
     _pad = BlueWakeTouchPad{};
@@ -2227,6 +2483,7 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     const CGFloat large = (pad ? 84.0 : 62.0 * base) * size;
     const CGFloat camera = (pad ? 112.0 : 86.0 * base) * size;
     _columnFrames = phone ? [self phoneColumnFramesInSafeArea:safe size:size] : nil;
+    _moveZone.frame = CGRectMake(0, 0, self.bounds.size.width * 0.5, self.bounds.size.height);
 
     [self place:_moveStick identifier:@"move" defaultFrame:
         phone ? BWFrameAtNormalizedCenter(safe, 0.1234722222, 0.7803490991, stick, stick)
@@ -2416,7 +2673,10 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     const CGFloat alpha = _editing ? 1.0 : BWDefault(kOpacityKey, 0.8);
     for (UIView* control in [self gameplayControls]) {
         BOOL extraHidden = NO;
-        if (control == _cStick) {
+        if (control == _moveStick) {
+            // The move stick shows only while a finger holds it (floatingStickBegan:).
+            extraHidden = !_floatingActive;
+        } else if (control == _cStick) {
             // The camera turns with a drag over the screen now (cameraDragged:).
             extraHidden = !_editing;
         } else if ([self isDPadButton:control]) {
@@ -2430,7 +2690,7 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
                 && !BWBoolDefault(kMovementExtrasKey, NO) && !_editing;
         }
         control.hidden = hidden || extraHidden;
-        control.userInteractionEnabled = !control.hidden;
+        control.userInteractionEnabled = !control.hidden && control != _moveStick;
         control.alpha = alpha;
         UIColor* border = [UIColor colorWithWhite:1.0 alpha:0.42];
         CGFloat width = 1.5;
@@ -2442,6 +2702,11 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
         control.layer.borderColor = border.CGColor;
         control.layer.borderWidth = width;
     }
+    // The left half takes the floating stick's touches, except while the layout editor is
+    // open: then it shows as a faint panel, with nothing to drag.
+    _moveZone.hidden = hidden;
+    _moveZone.userInteractionEnabled = !hidden && !_editing;
+    _moveZone.backgroundColor = _editing ? [UIColor colorWithWhite:1.0 alpha:0.08] : UIColor.clearColor;
     const BOOL showGroup = _editing;
     _dpadGroup.hidden = !showGroup;
     _dpadGroup.userInteractionEnabled = showGroup;

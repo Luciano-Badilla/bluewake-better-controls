@@ -96,6 +96,9 @@ void bluewake_mouse_camera_block(bool blocked);
 // does. The shell calls it from its pan gesture; it does nothing unless the mouse
 // camera is configured on.
 void bluewake_mouse_camera_touch_drag(double dx, double dy);
+// iPhone and iPad: a two-finger pinch changes the telescope's or Picto Box's zoom
+// level by `level` (0..1 is 1x..9x; positive zooms in). Same gating as the drag.
+void bluewake_mouse_camera_touch_pinch(double level);
 // When a menu closes: the controller's buttons, sticks and triggers stay at
 // rest for the game until they have all been let go, so the press that closed
 // the menu (B, or A on a button) doesn't reach the game.
