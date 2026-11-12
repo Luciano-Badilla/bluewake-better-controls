@@ -2334,22 +2334,26 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     auto at = [](CGFloat x, CGFloat y, CGFloat fw, CGFloat fh) {
         return [NSValue valueWithCGRect:CGRectMake(x - fw * 0.5, y - fh * 0.5, fw, fh)];
     };
-    const CGFloat stick = col, camera = col * 0.80, d = col * 0.30;
-    const CGFloat a = col * 0.60, b = col * 0.42, face = col * 0.40, z = col * 0.36;
-    const CGFloat pillH = col * 0.38;
+    // Laid out like a native touch action game, not a gamepad: the main action button
+    // rests under the right thumb, and the other buttons fan out around it.
+    const CGFloat stick = col * 0.95, camera = col * 0.80, d = col * 0.32;
+    const CGFloat a = col * 0.55, b = col * 0.42, face = col * 0.36, z = col * 0.40;
+    const CGFloat pillH = col * 0.40;
+    const CGFloat ax = rx + col * 0.22, ay = bottom - a * 0.5 - 8.0;
+    const CGFloat r = col * 0.58, diag = r * 0.7071;
     return @{
-        // left column, top to bottom
-        @"Start": at(lx, top + 24.0, col * 0.72, col * 0.32),
-        @"L": at(lx, top + 24.0 + col * 0.46, pillH, pillH),
-        @"DPad": at(lx, top + h * 0.47, 3.0 * d, 3.0 * d),
+        // left column: pause at the top, the shoulder, the D-pad on maps, and the stick low
+        @"Start": at(lx, top + 28.0, col * 0.78, col * 0.34),
+        @"L": at(lx, top + 110.0, pillH, pillH),
+        @"DPad": at(lx, top + h * 0.50, 3.0 * d, 3.0 * d),
         @"move": at(lx, bottom - stick * 0.5 - 6.0, stick, stick),
-        // right column below the menu button: Z and R, then Y and X, then B and A
-        @"Z": at(rx - col * 0.5 + z * 0.5, top + 80.0, z, z),
-        @"R": at(rx + col * 0.5 - col * 0.29, top + 80.0, pillH, pillH),
-        @"Y": at(rx - col * 0.25, top + h * 0.34, face, face),
-        @"X": at(rx + col * 0.27, top + h * 0.34 + col * 0.10, face, face),
-        @"A": at(rx + col * 0.16, top + h * 0.53, a, a),
-        @"B": at(rx - col * 0.30, top + h * 0.53 + col * 0.30, b, b),
+        // right column: Z and R at the top, then the fan around A
+        @"Z": at(rx - col * 0.22, top + 110.0, z, z),
+        @"R": at(rx + col * 0.22, top + 110.0, pillH, pillH),
+        @"X": at(ax, ay - r, face, face),
+        @"Y": at(ax - diag, ay - diag, face, face),
+        @"B": at(ax - r, ay, b, b),
+        @"A": at(ax, ay, a, a),
         @"c": at(rx, bottom - camera * 0.5 - 6.0, camera, camera),
     };
 }
