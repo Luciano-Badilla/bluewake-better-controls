@@ -38,9 +38,10 @@ extern "C" {
 extern "C" void bluewake_mouse_camera_configure(bool enabled, double sensitivity, bool invert_y);
 extern "C" void bluewake_mouse_camera_touch_drag(double dx, double dy);
 extern "C" bool bluewake_dpad_menu_state(uint8_t* open, uint8_t* status);
-// Degrees the camera turns per point of finger travel. Pointer travel uses 1.0; a
-// phone screen is small, so a full-width drag turns the camera less at 0.6.
-static const double kTouchCameraSensitivity = 0.6;
+// Degrees the camera turns per point of finger travel, times the mouse camera's
+// sensitivity. Pointer travel uses 1.0; a finger covers a small screen, so a drag
+// turns the camera more than pointer travel does: 1.2.
+static const double kTouchCameraSensitivity = 1.2;
 
 #define BW_GITHUB_URL "https://github.com/chrissotraidis/bluewake"
 

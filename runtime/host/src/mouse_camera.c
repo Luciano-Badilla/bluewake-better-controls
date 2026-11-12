@@ -132,6 +132,10 @@ static double g_sum_x, g_sum_y;
 // thread only adds to these; view_frame, on the game thread, takes them into the
 // sums above, so the two threads never write the same variable.
 static _Atomic double g_touch_x, g_touch_y;
+// The part of a finger's drag the view has not taken yet (game thread only). The view
+// takes kTouchEase of it each frame, so a drag turns the camera smoothly and eases out.
+static double g_touch_pending_x, g_touch_pending_y;
+static const double kTouchEase = 0.3;
 static double g_wheel; // notches, positive away from the player (zoom in)
 static double g_sensitivity = 1.0;
 static double g_invert_y = 1.0;
@@ -1154,11 +1158,20 @@ static void view_frame(CPUState* cpu, u32 camera) {
         // Drags made while the camera is not free are dropped, not replayed later.
         atomic_exchange(&g_touch_x, 0.0);
         atomic_exchange(&g_touch_y, 0.0);
+        g_touch_pending_x = g_touch_pending_y = 0.0;
         return; // camera_frame, at the draw, lets go
     }
     take_fresh_motion();
-    g_sum_x += atomic_exchange(&g_touch_x, 0.0);
-    g_sum_y += atomic_exchange(&g_touch_y, 0.0);
+    // A finger's drag arrives in pieces, a few per retrace. The view takes a share of
+    // what is pending each frame, so the turn is smooth; the rest carries over.
+    g_touch_pending_x += atomic_exchange(&g_touch_x, 0.0);
+    g_touch_pending_y += atomic_exchange(&g_touch_y, 0.0);
+    const double eased_x = g_touch_pending_x * kTouchEase;
+    const double eased_y = g_touch_pending_y * kTouchEase;
+    g_touch_pending_x -= eased_x;
+    g_touch_pending_y -= eased_y;
+    g_sum_x += eased_x;
+    g_sum_y += eased_y;
     double stick_yaw = 0.0, stick_pitch = 0.0;
     if (g_stick_on) {
         double x, y;
