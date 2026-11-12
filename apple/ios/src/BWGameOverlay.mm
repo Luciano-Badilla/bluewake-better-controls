@@ -38,6 +38,8 @@ extern "C" {
 extern "C" void bluewake_mouse_camera_configure(bool enabled, double sensitivity, bool invert_y);
 extern "C" void bluewake_mouse_camera_touch_drag(double dx, double dy);
 extern "C" void bluewake_mouse_camera_touch_pinch(double level);
+extern "C" void bluewake_mouse_camera_first_person_toggle(void);
+extern "C" bool bluewake_mouse_camera_conducting(void);
 extern "C" bool bluewake_dpad_menu_state(uint8_t* open, uint8_t* status);
 // Degrees the camera turns per point of finger travel, times the mouse camera's
 // sensitivity. Pointer travel uses 1.0; a finger covers a small screen, so a drag
@@ -134,6 +136,8 @@ static CAShapeLayer* BWRimLayer() {
 - (void)reset;
 // A floating stick: the thumb follows the finger, from the stick's centre where it went down.
 - (void)followTouch:(UITouch*)touch;
+// A symbol drawn in the middle of the stick (nil: none), such as the baton's note.
+- (void)setHintImage:(UIImage*)image;
 @end
 
 @implementation BWStickView {
@@ -142,6 +146,7 @@ static CAShapeLayer* BWRimLayer() {
     CAGradientLayer* _glass;   // the sea-glass fill over the base
     CAShapeLayer* _rim;        // the gold ring around it
     CAGradientLayer* _thumbGlass;
+    UIImageView* _hint;        // a symbol in the middle, under the thumb
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -155,6 +160,11 @@ static CAShapeLayer* BWRimLayer() {
         [self.layer addSublayer:_glass];
         _rim = BWRimLayer();
         [self.layer addSublayer:_rim];
+        _hint = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _hint.contentMode = UIViewContentModeScaleAspectFit;
+        _hint.userInteractionEnabled = NO;
+        _hint.hidden = YES;
+        [self addSubview:_hint];
         _thumb = [[UIView alloc] initWithFrame:CGRectZero];
         _thumb.userInteractionEnabled = NO;
         _thumbGlass = BWGlassLayer();
@@ -185,6 +195,8 @@ static CAShapeLayer* BWRimLayer() {
     _thumb.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_thumb.bounds].CGPath;
     _thumbGlass.frame = _thumb.bounds;
     _thumbGlass.cornerRadius = thumb * 0.5;
+    _hint.bounds = CGRectMake(0, 0, side * 0.42, side * 0.42);
+    _hint.center = CGPointMake(self.bounds.size.width * 0.5, self.bounds.size.height * 0.5);
     [self placeThumb];
 }
 
@@ -224,6 +236,11 @@ static CAShapeLayer* BWRimLayer() {
 }
 
 - (void)followTouch:(UITouch*)touch { [self handleTouch:touch]; }
+
+- (void)setHintImage:(UIImage*)image {
+    _hint.image = image;
+    _hint.hidden = image == nil;
+}
 
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self handleTouch:touches.anyObject]; }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self handleTouch:touches.anyObject]; }
@@ -543,6 +560,15 @@ static void BWDumpMenu(UIMenuElement* element, int depth) {
 
 // The icon that stands for each touch button (resources/touch_*.png). Buttons
 // without one, the D-pad arrows, Jump and Sprint, keep their text.
+// A touch control's picture, from resources/touch_*.png.
+static UIImage* BWTouchImage(NSString* name) {
+    NSString* path = [NSBundle.mainBundle pathForResource:name ofType:@"png"];
+    return path != nil ? [UIImage imageWithContentsOfFile:path] : nil;
+}
+
+// The first-person button's mask: not a pad bit, so the button never presses one.
+static const uint16_t kFirstPersonMask = 0x8000;
+
 static NSString* BWTouchIconName(uint16_t mask) {
     switch (mask) {
     case BLUEWAKE_TOUCH_A: return @"touch_action";
@@ -598,6 +624,8 @@ static UIColor* BWBadgeTextColor(uint16_t mask) {
     BWStickView* _cStick;
     BWStickZone* _moveZone;     // the left half, where a finger brings up the floating move stick
     BWGameButton* _bagButton;   // the backpack: opens the inventory with a START press
+    BWGameButton* _firstPersonButton; // toggles first person with the C-stick's push
+    BOOL _conducting;           // the baton is out, so the C-stick shows with a note
     BOOL _floatingActive;       // a finger is holding the move stick now
     UIView* _dpadGroup;
     NSMutableArray<BWGameButton*>* _buttons;
@@ -741,6 +769,15 @@ static UIColor* BWBadgeTextColor(uint16_t mask) {
 - (void)refreshMapState {
     uint8_t open = 0, status = 0;
     bluewake_dpad_menu_state(&open, &status);
+    // While the baton is out, the C-stick plays its notes, so it shows with a music note.
+    const BOOL conducting = bluewake_mouse_camera_conducting();
+    if (conducting != _conducting) {
+        _conducting = conducting;
+        if (!conducting)
+            [_cStick reset];
+        [_cStick setHintImage:conducting ? BWTouchImage(@"touch_baton") : nil];
+        [self updateAppearance];
+    }
     const BOOL onMap = open != 0 && status != 1 && status != 2;
     if (onMap == _onMap)
         return;
@@ -2286,10 +2323,14 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [self addButton:@"Z" mask:BLUEWAKE_TOUCH_Z identifier:@"Z"];
     [self addButton:@"START" mask:BLUEWAKE_TOUCH_START identifier:@"Start"];
     // The backpack opens the inventory: a START press, drawn with the system's backpack symbol.
-    UIImage* bag = [[UIImage systemImageNamed:@"backpack.fill"] imageWithTintColor:UIColor.whiteColor
-                                                                       renderingMode:UIImageRenderingModeAlwaysOriginal];
-    _bagButton = [self addButton:@"Mochila" mask:BLUEWAKE_TOUCH_START identifier:@"Backpack" image:bag badge:nil];
+    _bagButton = [self addButton:@"Mochila" mask:BLUEWAKE_TOUCH_START identifier:@"Backpack"
+                           image:BWTouchImage(@"touch_backpack") badge:nil];
     _bagButton.accessibilityLabel = @"Backpack (inventory)";
+    // The first-person button: the C-stick's push up enters first person and its push down
+    // leaves it, so it has no letter. It toggles on each press.
+    _firstPersonButton = [self addButton:@"1ª persona" mask:kFirstPersonMask identifier:@"FirstPerson"
+                                   image:BWTouchImage(@"touch_firstperson") badge:nil];
+    _firstPersonButton.accessibilityLabel = @"First person";
     [self addButton:@"L" mask:BLUEWAKE_TOUCH_L identifier:@"L"];
     [self addButton:@"R" mask:BLUEWAKE_TOUCH_R identifier:@"R"];
     [self addButton:@"Jump" mask:BLUEWAKE_TOUCH_JUMP identifier:@"Jump"];
@@ -2397,6 +2438,11 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
 - (void)buttonDown:(BWGameButton*)button {
     if (_editing)
         return;
+    if (button.inputMask == kFirstPersonMask) {
+        bluewake_mouse_camera_first_person_toggle();
+        button.transform = CGAffineTransformMakeScale(0.92, 0.92);
+        return;
+    }
     _pad.buttons |= button.inputMask;
     button.transform = CGAffineTransformMakeScale(0.92, 0.92);
     [self publish];
@@ -2405,6 +2451,10 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
 - (void)buttonUp:(BWGameButton*)button {
     if (_editing)
         return;
+    if (button.inputMask == kFirstPersonMask) {
+        button.transform = CGAffineTransformIdentity;
+        return;
+    }
     _pad.buttons &= (uint16_t)~button.inputMask;
     button.transform = CGAffineTransformIdentity;
     [self publish];
@@ -2562,6 +2612,11 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
     [self place:_bagButton identifier:@"Backpack" defaultFrame:
         CGRectMake(CGRectGetMaxX(startFrame) + startFrame.size.width * 0.3, CGRectGetMinY(startFrame),
                    startFrame.size.width, startFrame.size.height)];
+    // The first-person button sits under Z, the same size as Z. It can be moved in the editor.
+    const CGRect zFrame = [self buttonWithMask:BLUEWAKE_TOUCH_Z].frame;
+    [self place:_firstPersonButton identifier:@"FirstPerson" defaultFrame:
+        CGRectMake(CGRectGetMinX(zFrame), CGRectGetMaxY(zFrame) + zFrame.size.height * 0.25,
+                   zFrame.size.width, zFrame.size.width)];
 
     const CGFloat d = (pad ? 48.0 : 36.0 * base) * size;
     [self place:[self buttonWithMask:BLUEWAKE_TOUCH_JUMP] identifier:@"Jump" defaultFrame:
@@ -2703,8 +2758,9 @@ static NSString* BWQuestLogSummary(const BWQuestLog& log) {
             // The move stick shows only while a finger holds it (floatingStickBegan:).
             extraHidden = !_floatingActive;
         } else if (control == _cStick) {
-            // The camera turns with a drag over the screen now (cameraDragged:).
-            extraHidden = !_editing;
+            // The camera turns with a drag over the screen now (cameraDragged:). The stick
+            // shows only while the baton is out, when its notes are the C-stick's.
+            extraHidden = !_editing && !_conducting;
         } else if ([self isDPadButton:control]) {
             // The D-pad only shows on the maps that read it (refreshMapState).
             extraHidden = !_onMap && !_editing;

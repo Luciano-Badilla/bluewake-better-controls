@@ -99,6 +99,10 @@ void bluewake_mouse_camera_touch_drag(double dx, double dy);
 // iPhone and iPad: a two-finger pinch changes the telescope's or Picto Box's zoom
 // level by `level` (0..1 is 1x..9x; positive zooms in). Same gating as the drag.
 void bluewake_mouse_camera_touch_pinch(double level);
+// iPhone and iPad: a press of the first-person button (enters first person, or leaves it).
+void bluewake_mouse_camera_first_person_toggle(void);
+// Whether the Wind Waker's baton is out, so the C-stick is its notes' control.
+bool bluewake_mouse_camera_conducting(void);
 // When a menu closes: the controller's buttons, sticks and triggers stay at
 // rest for the game until they have all been let go, so the press that closed
 // the menu (B, or A on a button) doesn't reach the game.

@@ -8,6 +8,11 @@ Most button icons (`touch_*.png`) come from [game-icons.net](https://game-icons.
 - `touch_bow.png`: "bow-arrow" by Delapouite
 - `touch_boomerang.png`: "boomerang" by Delapouite
 - `touch_pause.png`: "pause-button" by Guard13007
+- `touch_backpack.png`: "backpack" by Delapouite
+- `touch_firstperson.png`: "eye-target" by Delapouite
+- `touch_baton.png`: "wizard-staff" by Lorc
+
+The three newest are taken from game-icons.net unchanged, as white 512 x 512 PNGs with transparent backgrounds.
 
 The drawings are unchanged. They were rendered to white 192 x 192 PNGs with transparent backgrounds.
 

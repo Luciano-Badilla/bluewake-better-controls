@@ -136,6 +136,15 @@ static _Atomic double g_touch_x, g_touch_y;
 // telescope's or Picto Box's zoom level (0..1, 1x..9x). The touch thread adds to it;
 // aim_frame takes it on the game thread each player update, in any view.
 static _Atomic double g_touch_zoom;
+// A touch button's first-person toggle (bluewake_mouse_camera_first_person_toggle): the press
+// sets the flag, and the pad hook starts the C-stick push that enters or leaves first person.
+static atomic_int g_touch_first_person;
+static unsigned long long g_touch_fp_from; // retrace that push started; 0 when none
+static bool g_touch_fp_leaving;            // that push steps out of first person
+// The baton state as the last camera frame saw it (bluewake_mouse_camera_conducting).
+static atomic_bool g_conducting_now;
+// The pinch's change in the follow camera's distance, taken by aim_frame and applied in zoom_frame.
+static double g_follow_pinch;
 // The part of a finger's drag the view has not taken yet (game thread only). The view
 // takes kTouchEase of it each frame, so a drag turns the camera smoothly and eases out.
 static double g_touch_pending_x, g_touch_pending_y;
@@ -551,6 +560,12 @@ void bluewake_mouse_camera_touch_pinch(double level) {
     }
 }
 
+// iPhone and iPad: the first-person button was pressed (it enters first person, or leaves it).
+void bluewake_mouse_camera_first_person_toggle(void) { atomic_store(&g_touch_first_person, 1); }
+
+// Whether the Wind Waker's baton is out (its notes are the C-stick's), as the last frame saw it.
+bool bluewake_mouse_camera_conducting(void) { return atomic_load(&g_conducting_now); }
+
 bool bluewake_mouse_camera_scripted(void) { return g_stick_test_count > 0u; }
 
 void bluewake_mouse_camera_release(void) {
@@ -780,6 +795,24 @@ void bluewake_mouse_camera_pad(DolPadState* pad) {
         else if (bit == 0x0020u)
             pad->trigger_right = 0xFF;
     }
+    // The touch button's first-person toggle. The push lasts up to half a second (30
+    // retraces) or until first person changes, so it never holds the stick on. Stepping out
+    // pushes a little down first and then past three quarters, as the stick camera does.
+    if (atomic_exchange(&g_touch_first_person, 0) != 0 && g_touch_fp_from == 0u) {
+        g_touch_fp_from = g_retrace + 1u;
+        g_touch_fp_leaving = g_first_person;
+    }
+    if (g_touch_fp_from != 0u) {
+        const unsigned long long n = g_retrace + 1u - g_touch_fp_from;
+        const bool finished = g_touch_fp_leaving ? (!g_first_person || g_subject_step >= 2 || n >= 30u)
+                                                 : (g_first_person || n >= 30u);
+        if (finished) {
+            g_touch_fp_from = 0u;
+        } else {
+            pad->substick_x = 0;
+            pad->substick_y = g_touch_fp_leaving ? (g_subject_step < 1 ? -30 : -127) : 127;
+        }
+    }
     if (!g_stick_on)
         return;
     double x, y, left_x, left_y;
@@ -969,8 +1002,10 @@ static void aim_frame(CPUState* cpu, u32 player) {
         return;
     const u32 camera = process + kCameraBody;
     const u32 style = camera_style(cpu, camera);
-    if (style_engine(cpu, style) != (u32)kEngineSubject)
+    if (style_engine(cpu, style) != (u32)kEngineSubject) {
+        g_follow_pinch += pinch; // not the telescope or the Picto Box: the follow camera's distance takes it
         return;
+    }
     g_aim_ran = true;
     // Gyro aiming: the controller's turn since the last aim frame, taken now
     // whatever happens below, so a held aim never saves it up.
@@ -1105,6 +1140,14 @@ static void zoom_frame(CPUState* cpu, u32 camera, bool player_camera) {
     const u32 style = camera_style(cpu, camera);
     const u32 engine = style_engine(cpu, style);
     const bool follow_camera = player_camera && (engine == (u32)kEngineFollow || engine == (u32)kEngineFollow2);
+    if (follow_camera && g_follow_pinch != 0.0) {
+        // Fingers apart bring the camera closer, as a wheel notch does: the distance changes by the inverse of the spread.
+        g_zoom *= pow(2.0, -2.0 * g_follow_pinch);
+        g_zoom = g_zoom < kZoomMin ? kZoomMin : g_zoom > kZoomMax ? kZoomMax : g_zoom;
+        if (fabs(g_zoom - 1.0) < 0.02)
+            g_zoom = 1.0;
+    }
+    g_follow_pinch = 0.0;
     if (follow_camera && g_stick_zoom_on && g_stick_zoom_axis != 0.0) {
         g_zoom = bw_stick_zoom_advance(g_zoom, g_stick_zoom_axis, g_stick_zoom_speed * 2.0, kGameFrameSeconds,
                                        kZoomMin, kZoomMax);
@@ -1236,6 +1279,7 @@ static void camera_frame(CPUState* cpu, u32 process) {
     // procTactWait_init and procTactPlay_init set it (USA 8014DF4C..5C stores
     // into 0x803C4C08 + 0x5CCC); the next proc's commonProcInit clears it.
     g_conducting = (mem_read32(cpu, kPlayerStatus1) & kStatus1Conduct) != 0u;
+    atomic_store(&g_conducting_now, g_conducting);
     g_subject_step = g_first_person ? (int)mem_read32(cpu, camera + kSubjectStep) : -1;
     g_stick_owns = false;
     g_stick_can_zoom = false;
