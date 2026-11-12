@@ -1,5 +1,6 @@
 #include "game_options.h"
 #include "bmg_patch.h"
+#include "bmg_text.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -233,10 +234,29 @@ static void write_bmg_byte(void* user, size_t offset, uint8_t value) {
     mem_write8(write->cpu, write->base + (u32)offset, value);
 }
 
+void bluewake_game_options_set_text_file(const char* path) {
+    free(g_bmg_text_path);
+    g_bmg_text_path = NULL;
+    if (path != NULL) {
+        const size_t length = strlen(path);
+        g_bmg_text_path = malloc(length + 1);
+        if (g_bmg_text_path != NULL)
+            memcpy(g_bmg_text_path, path, length + 1);
+    }
+    g_bmg_text_loaded = false;
+}
+
 static bool patch_bmg(CPUState* cpu, u32 bmg, u32* messages_out, u32* waits_out) {
     const u32 offset = bmg - 0x80000000u;
     if (cpu == NULL || cpu->ram == NULL || offset >= cpu->ram_size)
         return false;
+    // The Spanish text first: it rebuilds the messages, then the instant text patch reads them.
+    bluewake_bmg_text_apply(cpu->ram + offset, cpu->ram_size - offset);
+    if (!option_on(g_instant_text)) {
+        *messages_out = 0;
+        *waits_out = 0;
+        return true;
+    }
     BmgGuestWrite write = {cpu, bmg};
     return bluewake_bmg_patch(cpu->ram + offset, cpu->ram_size - offset,
                              write_bmg_byte, &write, messages_out, waits_out);
@@ -255,7 +275,7 @@ void bluewake_game_options_state_loaded(bool reapply) {
 }
 
 void bluewake_game_options_retrace(CPUState* cpu) {
-    if (!option_on(g_instant_text) || cpu->ram == NULL || (++g_retrace % 60u) != 0u)
+    if ((!option_on(g_instant_text) && g_bmg_text_path == NULL) || cpu->ram == NULL || (++g_retrace % 60u) != 0u)
         return;
     if (g_bmg != 0u && mem_read32(cpu, g_bmg) == 0x4D455347u && mem_read32(cpu, g_bmg + 4u) == 0x626D6731u)
         return;

@@ -32,6 +32,9 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+// The Spanish text file for the messages (runtime/host/src/game_options.c).
+void bluewake_game_options_set_text_file(const char* path);
 #include <dlfcn.h>
 #include <CommonCrypto/CommonDigest.h>
 
@@ -389,6 +392,10 @@ int main(int argc, char** argv) {
                 pack = [data stringByAppendingPathComponent:chosen];
             if ([d boolForKey:@"BlueWake.Mod.HDTextures"])
                 bw_default("DOL_AURORA_TEXTURE_PACK", pack);
+            // Spanish text: es.txt in the app data folder (runtime/host/src/bmg_text.h).
+            NSString* spanish = [data stringByAppendingPathComponent:@"es.txt"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:spanish])
+                bluewake_game_options_set_text_file(spanish.fileSystemRepresentation);
             // The Wind Waker HD look (runtime/host/src/hd_look.h).
             if ([d boolForKey:@"BlueWake.HDLook"])
                 bw_default("BLUEWAKE_HD_LOOK", @"1");
