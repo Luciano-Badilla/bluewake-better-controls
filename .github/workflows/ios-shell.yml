@@ -23,6 +23,12 @@ jobs:
           git clone --no-checkout --filter=blob:none https://github.com/chrissotraidis/RecompCore.git ref/recompcore
           git -C ref/recompcore checkout --detach f9e3f4e59be4d49f10130bf6e68bc5d5fa0451e6
 
+      - name: Apply the iPhone test patch (ios-fusion-test only)
+        if: github.ref_name == 'ios-fusion-test'
+        run: |
+          # Test-only: a shorter calm after a slow game (DOL_AURORA_SLOW_CALM). Not in main.
+          git -C ref/recompcore apply "$GITHUB_WORKSPACE/patches/recompcore/0206-Aurora-shorter-calm-after-a-slow-game-behind-a-switch.patch"
+
       - name: Fetch Dawn for iOS (pinned, checksum checked)
         run: |
           mkdir -p build/ios-deps && cd build/ios-deps
