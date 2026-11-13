@@ -1,0 +1,61 @@
+From 7132874b3bb1747f54f226d9a5402fdbd763e126 Mon Sep 17 00:00:00 2001
+From: Luciano Badilla <luciano.badilla@necta.ar>
+Date: Fri, 13 Nov 2026 13:52:00 -0300
+Subject: [PATCH] Aurora: a shorter calm after a slow game, behind
+ DOL_AURORA_SLOW_CALM
+
+When the game ran below full speed, in-between frames came back only after 3 s,
+and each repeat within 10 s doubled that up to 2 minutes. With DOL_AURORA_SLOW_CALM=1
+the first slow drop waits 1.5 s, repeats wait 3 s and then 6 s, and overload drops
+keep their rule. Unset, nothing changes.
+---
+ .../graphics/aurora/lib/gfx/frame_interp.cpp  | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/GXRuntime/graphics/aurora/lib/gfx/frame_interp.cpp b/GXRuntime/graphics/aurora/lib/gfx/frame_interp.cpp
+index 4f590b0..8b24612 100644
+--- a/GXRuntime/graphics/aurora/lib/gfx/frame_interp.cpp
++++ b/GXRuntime/graphics/aurora/lib/gfx/frame_interp.cpp
+@@ -2529,6 +2529,16 @@ static void pace_steps() {
+   static constexpr int kCalmMostSlow = 3600; // 2 min, after the game itself ran slow
+   static constexpr uint64_t kSettle = 4; // game frames between drops
+   static constexpr uint64_t kSoon = 300; // an overload within 10 s of coming back
++  // DOL_AURORA_SLOW_CALM=1 (BlueWake's iPhone test): after the game ran slow, come
++  // back after 1.5 s of calm, and a repeat within 10 s doubles that up to 6 s,
++  // not 2 min. Unset, the calm is as before.
++  static constexpr int kSlowCalmStart = 45; // game frames, 1.5 s
++  static constexpr int kSlowCalmMost = 180; // game frames, 6 s
++  static int slowRepeats = 0; // slow drops in a row that each came within 10 s of a raise
++  static const bool shortSlowCalm = [] {
++    const char* env = std::getenv("DOL_AURORA_SLOW_CALM");
++    return env != nullptr && env[0] == '1';
++  }();
+   // DOL_AURORA_FRAME_INTERP_PACING: 0 never lowers them, 1 lowers 120 Hz's
+   // too. Unset, only 60 Hz's are: 120 Hz stays 120, where a drop to 60 for a
+   // stall of a few frames, over by the time it dropped, was felt more than the
+@@ -2568,7 +2578,12 @@ static void pace_steps() {
+   } else if (sustained) {
+     p.calm = 0;
+     if (p.budget > 0 && p.frame - p.lastDrop >= kSettle) {
+-      if (p.lastRaise != 0 && p.frame - p.lastRaise < kSoon)
++      const bool repeat = p.lastRaise != 0 && p.frame - p.lastRaise < kSoon;
++      if (slow && shortSlowCalm) {
++        // 1.5 s, then 3 s and 6 s for slow drops that repeat within 10 s of a raise.
++        slowRepeats = repeat ? slowRepeats + 1 : 0;
++        p.calmNeeded = std::min(kSlowCalmStart << std::min(slowRepeats, 2), kSlowCalmMost);
++      } else if (repeat)
+         p.calmNeeded = std::min(p.calmNeeded * 2, slow ? kCalmMostSlow : kCalmMost);
+       const int before = p.budget;
+       p.budget = p.budget > 1 ? 1 : 0;
+@@ -2579,7 +2594,7 @@ static void pace_steps() {
+       if (slow) {
+         std::fprintf(stderr,
+                      "[interp-pace] in-between frames %d -> %d (the game ran below full speed, %.1f game "
+-                     "frames a second; back after %.0f s calm)\n",
++                     "frames a second; back after %.1f s calm)\n",
+                      before, p.budget, 1000.0 / p.gapMs, p.calmNeeded / 30.0);
+         // The next drop on new frames' gaps.
+         p.gaps = 0;
+-- 
+2.43.0
+
