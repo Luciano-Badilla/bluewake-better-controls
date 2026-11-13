@@ -7696,7 +7696,11 @@ int main(int argc, char** argv) {
     // The options menu's saved choices, before anything reads the environment.
     bluewake_settings_load();
     host_apply_aspect();
-#if defined(__APPLE__) || defined(__ANDROID__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // Test build (ios-fusion-test): draw fusion on for iPhone, to measure its effect
+    // on the GX worker. Not the default on main until it has been played on iPhone.
+    setenv("DOL_GX_FUSE", "1", 0);
+#elif defined(__APPLE__) || defined(__ANDROID__)
     // Draw fusion (RecompCore patch 0166, Elliott Tate): a display list's strips
     // as one draw, a tenth of the draws. On for Windows and Linux, where it has
     // been played (Linux: a Steam Deck, #215); off on the Mac and iPhone until
